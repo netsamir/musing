@@ -8,7 +8,7 @@ def readme():
 setup(
     name='BTCBot',
     version='1.0',
-    description='Python Distribution Utilities',
+    description='A Bot to trades bitcoin',
     author='Samir and Charlie',
     author_email='netsamir@gmail.com',
     package_dir={"": "src"},
