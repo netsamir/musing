@@ -1,0 +1,7 @@
+[run]
+omit =
+  */local/*
+  tests/*
+  setup.py
+  tasks.py
+  *__init__*

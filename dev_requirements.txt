@@ -1,0 +1,17 @@
+black
+coverage
+flake8
+invoke
+ipython
+isort
+mypy
+mypy-extensions
+nose2
+pep8
+pyflakes
+python-dotenv
+sphinx
+termcolor
+typing-extensions
+xmltodict
+jedi==0.17.2
