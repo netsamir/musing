@@ -12,13 +12,9 @@ import bybit  # type: ignore
 IDLE_TRIGGER = 10
 THRESHOLD = 5
 
-LOGGER = logging.getLogger()
-LOGGER.setLevel(logging.INFO)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ch.setFormatter(formatter)
-LOGGER.addHandler(ch)
+LOGGER = logging.getLogger("crypto_bot")
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
+LOGGER.setLevel(logging.DEBUG)
 
 
 class NotInCycle(Exception):
@@ -35,9 +31,9 @@ class Position(NamedTuple):
     entry_price: float
     real_entry_price: float
     quantity: int
-    # rate_limit_status: int
-    # rate_limit_reset: str
-    # rate_limit: int
+    rate_limit_status: int
+    rate_limit_reset: str
+    rate_limit: int
 
 
 class Orders(NamedTuple):
@@ -84,24 +80,21 @@ class BybitExchange(Exchange):
     def __init__(self, symbol: str = "BTCUSD"):
         self.symbol = symbol
         self.client = bybit.bybit(
-            test=False,
+            test=True,
             api_key=environ["BYBIT_MAINNET_API_KEY"],
             api_secret=environ["BYBIT_MAINNET_API_SECRET"],
         )
 
     @property
     def bid(self) -> float:
-        """
-        # [ins] In [41]: %time client.Market.Market_symbolInfo().result()[0]['result'][0]['bid_price'] # CPU times: user 3.06 ms, sys: 220 µs, total: 3.28 ms
-        # Wall time: 329 ms
-        # Out[41]: '56742.00'
-        """
+        """ return the bid price """
         return float(
             self.client.Market.Market_symbolInfo().result()[0]["result"][0]["bid_price"]
         )
 
     @property
     def ask(self) -> float:
+        """ return the bid price """
         return float(
             self.client.Market.Market_symbolInfo().result()[0]["result"][0]["ask_price"]
         )
@@ -132,15 +125,19 @@ class BybitExchange(Exchange):
         my_position = self.client.Positions.Positions_myPosition(
             symbol=self.symbol
         ).result()[0]
-        LOGGER.info(f"Position: {my_position}")
 
-        if my_position['result']["size"] == 0:
+        LOGGER.debug(f"Position: {my_position}")
+
+        if my_position["result"]["size"] == 0:
             raise NotInCycle
 
         return Position(
-            round_point(my_position['result']["entry_price"]),
-            my_position['result']["entry_price"],
-            my_position['result']["size"],
+            round_point(my_position["result"]["entry_price"]),
+            float(my_position["result"]["entry_price"]),
+            my_position["result"]["size"],
+            my_position["rate_limit_status"],
+            convert_epoch(my_position["rate_limit_reset_ms"]),
+            my_position["rate_limit"],
         )
 
     def cancel_all(self):
@@ -184,19 +181,19 @@ class CharlieBot:
         self,
         short_big_spread: int,
         short_small_spread: int,
-        long_spread: int,
+        long_ratio: float,
         init_quantity: int,
         exchange_name: str,
     ) -> None:
         self.short_small_spread = short_small_spread
         self.short_big_spread = short_big_spread
-        self.long_spread = long_spread
+        self.long_ratio = long_ratio
         self.init_quantity = init_quantity
 
         self.exchange_name = exchange_name
         self.exchange = exchange_factory(exchange_name)
 
-    def trigger_long(self) -> None:
+    def trigger_long(self) -> Position:
         """ trigger the start of a trading with the best long """
 
         current_bid = self.exchange.bid
@@ -230,26 +227,25 @@ class CharlieBot:
                     LOGGER.info(f"Sleeping {IDLE_TRIGGER} second.")
 
             else:
-                info_msg = f"Position found: {position}. Spread {current_bid}/{position.real_entry_price}: "
-                info_msg += f"{float(position.real_entry_price) - current_bid}"
+                position_spread = float(position.real_entry_price) - current_bid
+                info_msg = f"Position found: {position}. Spread: {current_bid}/{position.real_entry_price}: "
+                info_msg += f"{position_spread} ({position_spread / current_bid * 100} %)"
                 LOGGER.info(info_msg)
-                break
+                return position
 
-    def trigger_complete(self, position: Position) -> None:
+    def trigger_complete(self) -> Position:
         """ Complete the trigger with a short and a long """
-        # LOGGER.info(f'Position found: {position}')
+        position = self.position
         short_price = position.entry_price + self.short_big_spread
-        # LOGGER.info(f'Take a short position: {short_price}, {self.init_quantity}')
         LOGGER.info(f"Take a short order: {short_price}, {self.init_quantity}")
         LOGGER.info(self.exchange.short(short_price, self.init_quantity))
 
-        long_price = position.entry_price - self.long_spread
-        # LOGGER.info(f'Take a long position: {long_price}, {self.init_quantity}')
+        long_price = position.entry_price - self.long_ratio / 100
         LOGGER.info(f"Take a long order: {long_price}, {self.init_quantity}")
         LOGGER.info(self.exchange.long(long_price, self.init_quantity))
-        return
+        return position
 
-    def cycle(self) -> None:
+    def start_cycle(self) -> None:
         for _ in count():
             try:
                 position = self.exchange.position
@@ -265,7 +261,7 @@ class CharlieBot:
                     )
                     self.exchange.short(position.entry_price + self.short_big_spread, 1)
                     self.exchange.long(
-                        position.entry_price - self.long_spread, position.quantity * 2
+                        position.entry_price - self.long_ratio, position.quantity * 2
                     )
                 sleep(IDLE_TRIGGER)
 
@@ -276,56 +272,67 @@ class CharlieBot:
 def main():
     """ Entry point to the script """
     parser = ArgumentParser(
-        description="Start the execution of the trading with the Bot"
+        description="CharlieBot"
     )
 
+    default_short_big_spread = 100
+    help_bs = "The number of point we take from the entry price for the next short order to make a profit,"
+    help_bs += f" default: {default_short_big_spread}"
     parser.add_argument(
         "short_big_spread",
         type=int,
-        default=1,
-        help="The number of point we take from the entry price for the next short order to make a profit",
+        default=default_short_big_spread,
+        help=help_bs
     )
 
+    default_short_small_spread = 25
+    help_ss = "The number of point we take from the entry price for the next short order to reduce our exposure,"
+    help_ss += f" default: {default_short_small_spread}"
     parser.add_argument(
         "short_small_spread",
         type=int,
-        default=1,
-        help="The number of point we take from the entry price for the next short order to reduce our exposure",
+        default=default_short_small_spread,
+        help=help_ss,
     )
 
+    default_long_ratio = 0.001
+    help_lr = "The ratio from the entry price for the next long order,"
+    help_lr += f" default: {default_long_ratio}"
     parser.add_argument(
-        "long_spread",
-        type=int,
-        default=1,
-        help="The number of point we take from the entry price for the next long order",
+        "long_ratio",
+        type=float,
+        default=default_long_ratio,
+        help=help_lr,
     )
 
+    default_qty = 1
     parser.add_argument(
         "initial_quantity",
         type=int,
-        default=1,
-        help="The initial number of contract to buy (one contract cost one dollar)",
+        default=default_qty,
+        help=f"The initial number of contract to buy (one contract cost one dollar), default: {default_qty}",
     )
 
+    default_ex = 'bybit'
     parser.add_argument(
         "exchange_name",
+        nargs='?',
         choices=["bybit"],
-        default="bybit",
-        help="The exchange on which the bot should run",
+        default=default_ex,
+        help=f"The exchange on which CharlieBot should run, default: {default_ex}",
     )
 
     args = parser.parse_args()
     bot = CharlieBot(
         args.short_big_spread,
         args.short_small_spread,
-        args.long_spread,
-        args.init_quantity,
+        args.long_ratio,
+        args.initial_quantity,
         args.exchange_name,
     )
 
     try:
-        logging.info("Start of trading ...")
-        logging.info(args)
-        bot.start_cycle()
+        LOGGER.info("Start of trading ...")
+        bot.exchange.position
     except KeyboardInterrupt:
         logging.info("End of trading")

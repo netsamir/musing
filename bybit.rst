@@ -2,6 +2,10 @@
 
 .. code-block:: python
 
+        # [ins] In [41]: %time client.Market.Market_symbolInfo().result()[0]['result'][0]['bid_price'] # CPU times: user 3.06 ms, sys: 220 µs, total: 3.28 ms
+        # Wall time: 329 ms
+        # Out[41]: '56742.00'
+
         [ins] In [5]: my_position = client.Positions.Positions_myPosition(symbol="BTCUSD").result()
 
         [ins] In [6]: my_position
