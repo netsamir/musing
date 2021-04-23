@@ -5,16 +5,16 @@ from datetime import datetime
 from itertools import count
 from os import environ
 from time import sleep
-from typing import List, NamedTuple, Tuple
+from typing import List, NamedTuple
 
 import bybit  # type: ignore
 
-IDLE_TRIGGER = 10
+IDLE_TRIGGER = 5
 THRESHOLD = 5
 
 LOGGER = logging.getLogger("crypto_bot")
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
-LOGGER.setLevel(logging.DEBUG)
+LOGGER.setLevel(logging.INFO)
 
 
 class NotInCycle(Exception):
@@ -36,9 +36,15 @@ class Position(NamedTuple):
     rate_limit: int
 
 
+class Order(NamedTuple):
+    order_id: str
+    price: float
+    qty: int
+
+
 class Orders(NamedTuple):
-    longs: List[Tuple[float, int]]
-    shorts: List[Tuple[float, int]]
+    longs: List[Order]
+    shorts: List[Order]
 
 
 class Exchange:  # pragma: no cover
@@ -76,6 +82,11 @@ def round_point(entry: str) -> float:
     return float(left + "." + floor)
 
 
+def compute_long_price(price: float, qty: int, ratio: float) -> float:
+    """ Compute the long price """
+    return price * (1 - qty * ratio)
+
+
 class BybitExchange(Exchange):
     def __init__(self, symbol: str = "BTCUSD"):
         self.symbol = symbol
@@ -108,12 +119,12 @@ class BybitExchange(Exchange):
 
         return Orders(
             longs=[
-                (float(order["price"]), int(order["qty"]))
+                Order(order['order_id'], float(order["price"]), int(order["qty"]))
                 for order in all_orders
                 if order["side"] == "Buy"
             ],
             shorts=[
-                (float(order["price"]), int(order["qty"]))
+                Order(order['order_id'], float(order["price"]), int(order["qty"]))
                 for order in all_orders
                 if order["side"] == "Sell"
             ],
@@ -142,6 +153,9 @@ class BybitExchange(Exchange):
 
     def cancel_all(self):
         return self.client.Order.Order_cancelAll(symbol=self.symbol).result()
+
+    def cancel(self, order_id: str):
+        return self.client.Order.Order_cancel(symbol=self.symbol, order_id=order_id).result()
 
     def long(self, price: float, quantity: int) -> None:
         """ Put a buy order to on the exchange """
@@ -198,14 +212,13 @@ class CharlieBot:
 
         current_bid = self.exchange.bid
         LOGGER.info(f"Starting by taking a position: {current_bid}, {self.init_quantity} ...")
-        LOGGER.info(self.exchange.long(current_bid, self.init_quantity))
+        self.exchange.long(current_bid, self.init_quantity)
         for _ in count():
             sleep(IDLE_TRIGGER)
             try:
                 LOGGER.info("Checking for position ...")
                 position = self.exchange.position
             except NotInCycle:
-                # LOGGER.info(f'No position, trying to take position: {self.init_quantity}, {new_bid}')
                 new_bid = self.exchange.bid
                 info_msg = (
                     f"No position found current_bid/new_bid: {current_bid}/{new_bid}."
@@ -214,16 +227,13 @@ class CharlieBot:
                 LOGGER.info(info_msg)
                 if current_bid + THRESHOLD < new_bid:
                     LOGGER.info("Cancel previous orders")
-                    LOGGER.info(self.exchange.cancel_all())
+                    self.exchange.cancel_all()
                     current_bid = new_bid
                     info_msg += (
                         f"Trying to take position: {self.init_quantity}, {current_bid}"
                     )
                     LOGGER.info(info_msg)
-                    # LOGGER.info('Cancel all position')
-
                     LOGGER.info(self.exchange.long(current_bid, self.init_quantity))
-                    # LOGGER.info(f'Sleeping {IDLE_TRIGGER} second')
                     LOGGER.info(f"Sleeping {IDLE_TRIGGER} second.")
 
             else:
@@ -233,37 +243,49 @@ class CharlieBot:
                 LOGGER.info(info_msg)
                 return position
 
-    def trigger_complete(self) -> Position:
+    def trigger_complete(self, position: Position = None) -> Position:
         """ Complete the trigger with a short and a long """
-        position = self.position
+        position = position if position else self.position
         short_price = position.entry_price + self.short_big_spread
         LOGGER.info(f"Take a short order: {short_price}, {self.init_quantity}")
         LOGGER.info(self.exchange.short(short_price, self.init_quantity))
 
-        long_price = position.entry_price - self.long_ratio / 100
+        long_price = compute_long_price(position.entry_price, position.quantity, self.long_ratio)
         LOGGER.info(f"Take a long order: {long_price}, {self.init_quantity}")
         LOGGER.info(self.exchange.long(long_price, self.init_quantity))
         return position
 
     def start_cycle(self) -> None:
         for _ in count():
+            sleep(IDLE_TRIGGER)
             try:
                 position = self.exchange.position
             except NotInCycle:
-                return self.exchange.cancel_all()
+                LOGGER.info('Cancel all orders and existing: trade successful!')
+                self.exchange.cancel_all()
+                break
+
+            orders = self.exchange.orders
+            if not orders.longs:
+                LOGGER.info('No more long orders, reset short and longs')
+                self.exchange.cancel_all()
+                self.exchange.short(
+                    position.entry_price + self.short_small_spread,
+                    position.quantity - 1,
+                )
+                self.exchange.short(position.entry_price + self.short_big_spread, 1)
+                self.exchange.long(
+                    compute_long_price(position.entry_price, position.quantity, self.long_ratio),
+                    position.quantity * 2
+                )
             else:
-                orders = self.exchange.orders
-                if len(orders.longs) == 0:
-                    self.exchange.cancel_all()
-                    self.exchange.short(
-                        position.entry_price + self.short_small_spread,
-                        position.quantity - 1,
-                    )
-                    self.exchange.short(position.entry_price + self.short_big_spread, 1)
-                    self.exchange.long(
-                        position.entry_price - self.long_ratio, position.quantity * 2
-                    )
-                sleep(IDLE_TRIGGER)
+                if len(orders.shorts) == 1 and position.quantity > self.init_quantity:
+                    LOGGER.info('only one shorts reset long')
+                    for order in orders.longs:
+                        self.exchange.cancel(order.order_id)
+                    long_price = compute_long_price(position.entry_price, position.quantity, self.long_ratio)
+                    LOGGER.info(f"Take a long order: {long_price}, {self.init_quantity}")
+                    LOGGER.info(self.exchange.long(long_price, self.init_quantity))
 
     def __repr__(self):
         return "{}({!r})".format(self.__class__.__name__, self.dict__)
@@ -275,7 +297,7 @@ def main():
         description="CharlieBot"
     )
 
-    default_short_big_spread = 100
+    default_short_big_spread = 250
     help_bs = "The number of point we take from the entry price for the next short order to make a profit,"
     help_bs += f" default: {default_short_big_spread}"
     parser.add_argument(
