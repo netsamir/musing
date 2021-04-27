@@ -189,10 +189,11 @@ class BybitExchange(Exchange):
         LOGGER.info("Wait for feedback")
         for _ in range(30):
             feedback = self.ws.get_data("order")
-            LOGGER.info(f"Feedback Received: {feedback}")
             if feedback:
                 if feedback[0]["order_status"] == "Cancelled":
+                    LOGGER.warning(f"Order Cancel: {feedback}")
                     raise OrderCancelled
+
                 LOGGER.info(f"Feedback Received: {feedback}")
                 self.orders = [
                     Order(  # type: ignore
@@ -424,29 +425,38 @@ class CharlieBot:
     def trigger_complete(self) -> None:
         """ Complete the trigger with a short and a long """
         position = self.exchange.position
+
         short_big_price = position.entry_price + self.short_big_spread
         short_small_price = position.entry_price + self.short_big_spread
+
         if position.quantity != self.init_quantity:
+            for _ in range(10000):
+                try:
+                    LOGGER.info(
+                        f"Take a short order: {short_big_price}, {self.init_quantity}"
+                    )
+                    self.exchange.short(
+                        short_small_price, position.quantity - self.init_quantity
+                    )
+                    break
+                except OrderCancelled:
+                    short_small_price = self.exchange.ask + self.short_small_spread
+                    sleep(SLEEP_WS)
+            else:
+                raise NotImplementedError("There is problem to put our order")
+
+        for _ in range(10000):
             try:
                 LOGGER.info(
                     f"Take a short order: {short_big_price}, {self.init_quantity}"
                 )
-                self.exchange.short(
-                    short_small_price, position.quantity - self.init_quantity
-                )
+                self.exchange.short(short_big_price, self.init_quantity)
+                break
             except OrderCancelled:
-                self.exchange.short(
-                    self.exchange.ask + self.short_big_spread,
-                    position.quantity - self.init_quantity,
-                )
-
-        try:
-            LOGGER.info(f"Take a short order: {short_big_price}, {self.init_quantity}")
-            self.exchange.short(short_big_price, self.init_quantity)
-        except OrderCancelled:
-            self.exchange.short(
-                self.exchange.ask + self.short_big_spread, self.init_quantity
-            )
+                short_big_price = self.exchange.ask + self.short_big_spread
+                sleep(SLEEP_WS)
+        else:
+            raise NotImplementedError("There is problem to put our order")
 
         for long_price, quantity, spread in allocate_longs(
             position.entry_price, position.quantity * 2
@@ -481,15 +491,27 @@ class CharlieBot:
                 for short in orders.shorts.values():
                     self.exchange.cancel(short.order_id)
                 # We want to reduce the exposure by putting an order close to our entry price
-                self.exchange.short(
-                    position.entry_price + self.short_small_spread,
-                    position.quantity - self.init_quantity,
-                )
+                try:
+                    self.exchange.short(
+                        position.entry_price + self.short_small_spread,
+                        position.quantity - self.init_quantity,
+                    )
+                except OrderCancelled:
+                    self.exchange.short(
+                        self.exchange.ask + self.short_small_spread,
+                        position.quantity - self.init_quantity,
+                    )
+
                 # We put a second orders in order to make a profit on our trade which correspond to the
                 # initital quantity
-                self.exchange.short(
-                    position.entry_price + self.short_big_spread, self.init_quantity
-                )
+                try:
+                    self.exchange.short(
+                        position.entry_price + self.short_big_spread, self.init_quantity
+                    )
+                except OrderCancelled:
+                    self.exchange.short(
+                        self.exchange.ask + self.short_big_spread, self.init_quantity
+                    )
 
             if orders.head_longs().quantity != position.quantity * 2:
                 LOGGER.info(
