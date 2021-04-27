@@ -112,3 +112,28 @@
             'cum_exec_value': '0',
             'cum_exec_fee': '0',
             'reject_reason': 'EC_NoError'}]
+
+
+::
+
+    # subscribe to topics
+    ws.subscribe_orderBookL2("BTCUSD")
+    ws.subscribe_kline("BTCUSD", '1m')
+    ws.subscribe_order()
+    ws.subscribe_execution()
+    ws.subscribe_position()
+    ws.subscribe_instrument_info('BTCUSD')
+    ws.subscribe_insurance()
+
+    # get responses forever
+    while(1):
+        logger.info(ws.get_data("orderBookL2_25.BTCUSD"))
+        logger.info(ws.get_data('kline.BTCUSD.1m'))
+        logger.info(ws.get_data('order'))
+        logger.info(ws.get_data("execution"))
+        logger.info(ws.get_data("position"))
+        logger.info(ws.get_data("instrument_info.100ms.BTCUSD"))
+        logger.info(ws.get_data('insurance.BTC'))
+        logger.info(ws.get_data('insurance.EOS'))
+        sleep(1)  # wait one second before checking for new responses
+
