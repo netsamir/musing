@@ -11,7 +11,7 @@ import bybit  # type: ignore
 import BybitWebsocket  # type: ignore
 
 LOGGER = logging.getLogger("crypto_bot")
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(funcName): %(message)s")
 LOGGER.setLevel(logging.INFO)
 
 
@@ -279,7 +279,7 @@ class BybitExchange(Exchange):
         if my_position["result"]["size"] == 0:
             raise NotInCycle
 
-        return Position(
+        position = Position(
             round_point(float(my_position["result"]["entry_price"])),
             float(my_position["result"]["entry_price"]),
             my_position["result"]["size"],
@@ -287,6 +287,8 @@ class BybitExchange(Exchange):
             convert_epoch(my_position["rate_limit_reset_ms"]),
             my_position["rate_limit"],
         )
+        LOGGER.info(position)
+        return position
 
     def cancel_all(self) -> None:
         output = self.rest.Order.Order_cancelAll(symbol=self.symbol).result()
@@ -306,7 +308,7 @@ class BybitExchange(Exchange):
 
     def long(self, price: float, quantity: int) -> None:
         """ Put a buy order to on the exchange """
-        LOGGER.info(f'Long({price}, {quantity}')
+        LOGGER.info(f'Long({price}, {quantity})')
         output = self.rest.Order.Order_new(
             side="Buy",
             symbol=self.symbol,
@@ -322,7 +324,7 @@ class BybitExchange(Exchange):
 
     def short(self, price: float, quantity: int) -> None:
         """ Put a buy order to on the exchange """
-        LOGGER.info(f'Long({price}, {quantity}')
+        LOGGER.info(f'Short({price}, {quantity})')
         output = self.rest.Order.Order_new(
             side="Sell",
             symbol=self.symbol,
@@ -366,31 +368,23 @@ class CharlieBot:
         """ trigger the start of a trading with the best long """
 
         current_bid = self.exchange.bid
-        LOGGER.info(
-            f"Starting by taking a position: {current_bid}, {self.init_quantity} ..."
-        )
         self.exchange.long(current_bid, self.init_quantity)
         for _ in count():
             sleep(SLEEP_REST)
             try:
-                LOGGER.info("Checking for position ...")
                 position = self.exchange.position
             except NotInCycle:
                 new_bid = self.exchange.bid
                 info_msg = (
-                    f"No position found current_bid/new_bid: {current_bid}/{new_bid}."
+                    f"No position found. Current_bid/new_bid: {current_bid}/{new_bid}."
                 )
                 info_msg += f" Spread current_bid/new_bid: ({new_bid - current_bid})"
                 LOGGER.info(info_msg)
                 if current_bid + TRESHOLD_REST < new_bid:
                     for order_id in self.exchange.orders.longs:
-                        LOGGER.info(f"Cancel orders: {order_id}")
+                        LOGGER.info(f"Cancel order: {order_id}")
                         self.exchange.cancel(order_id)
                     current_bid = new_bid
-                    info_msg = (
-                        f"Trying to take position: {self.init_quantity}, {current_bid}"
-                    )
-                    LOGGER.info(info_msg)
                     self.exchange.long(current_bid, self.init_quantity)
                     LOGGER.info(f"Sleeping {SLEEP_REST} second.")
 
@@ -410,7 +404,7 @@ class CharlieBot:
         self.exchange.short(short_price, self.init_quantity)
 
         for long_price, quantity, spread in allocate_longs(
-            position.entry_price, position.quantity
+            position.entry_price, position.quantity * 2
         ):
             LOGGER.info(f"Take a long order: {long_price}, {quantity}, {spread}")
             self.exchange.long(long_price, quantity)
@@ -453,7 +447,7 @@ class CharlieBot:
                 LOGGER.info('Head long quantity != Position Quantity: {orders.head_longs()} < {position.quantity}')
                 for _long, long_settings in zip_longest(
                     orders.longs.values(),
-                    allocate_longs(position.entry_price, position.quantity),
+                    allocate_longs(position.entry_price, position.quantity * 2),
                 ):
                     if _long:
                         self.exchange.cancel(_long.order_id)
