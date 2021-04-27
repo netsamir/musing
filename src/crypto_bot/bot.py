@@ -11,7 +11,7 @@ import bybit  # type: ignore
 import BybitWebsocket  # type: ignore
 
 LOGGER = logging.getLogger("crypto_bot")
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(funcName): %(message)s")
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(funcName)s: %(message)s")
 LOGGER.setLevel(logging.INFO)
 
 
@@ -33,6 +33,8 @@ class Position(NamedTuple):
     rate_limit_status: int
     rate_limit_reset: str
     rate_limit: int
+    unrealised_pnl: float
+    liq_price: float
 
 
 class Order(NamedTuple):
@@ -173,6 +175,11 @@ class BybitExchange(Exchange):
         self.ws.subscribe_order()
         self._orders = Orders(longs={}, shorts={})
 
+    def keep_alive(self):
+        """ keep connection alive """
+        self.ws.ping()
+        self.get_data('pong')
+
     def _wait_feedback(self) -> None:
         """ Wait Bybit feedback and update states """
         LOGGER.info('Wait for feedback')
@@ -286,6 +293,8 @@ class BybitExchange(Exchange):
             my_position["rate_limit_status"],
             convert_epoch(my_position["rate_limit_reset_ms"]),
             my_position["rate_limit"],
+            my_position['result']['unrealised_pnl'],
+            my_position['result']['liq_price'],
         )
         LOGGER.info(position)
         return position
@@ -376,9 +385,9 @@ class CharlieBot:
             except NotInCycle:
                 new_bid = self.exchange.bid
                 info_msg = (
-                    f"No position found. Current_bid/new_bid: {current_bid}/{new_bid}."
+                    f"No position found. Current bid/new bid: {current_bid}/{new_bid}."
                 )
-                info_msg += f" Spread current_bid/new_bid: ({new_bid - current_bid})"
+                info_msg += f" Spread current bid/new bid: ({new_bid - current_bid})"
                 LOGGER.info(info_msg)
                 if current_bid + TRESHOLD_REST < new_bid:
                     for order_id in self.exchange.orders.longs:
@@ -418,6 +427,7 @@ class CharlieBot:
         # 2. The head(new_orders.qty) == position.qty * 2 and in general Qn+1 = Qn * 2
         for _ in count():
             sleep(SLEEP_WS)
+            self.keep_alive()
             try:
                 position = self.exchange.position
             except NotInCycle:
