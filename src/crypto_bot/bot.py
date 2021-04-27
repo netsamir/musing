@@ -427,7 +427,7 @@ class CharlieBot:
         # 2. The head(new_orders.qty) == position.qty * 2 and in general Qn+1 = Qn * 2
         for _ in count():
             sleep(SLEEP_WS)
-            self.keep_alive()
+            self.exchange.keep_alive()
             try:
                 position = self.exchange.position
             except NotInCycle:
