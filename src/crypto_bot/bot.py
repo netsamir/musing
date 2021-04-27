@@ -2,11 +2,10 @@
 import logging
 from argparse import ArgumentParser
 from datetime import datetime
-from itertools import count
+from itertools import count, zip_longest
 from os import environ
 from time import sleep
-from typing import List, NamedTuple, Dict
-from itertools import zip_longest
+from typing import Dict, NamedTuple, Iterator, Tuple, List
 
 import bybit  # type: ignore
 import BybitWebsocket  # type: ignore
@@ -58,25 +57,32 @@ class Orders(NamedTuple):
 
 
 class Exchange:  # pragma: no cover
+    @property
     def bid(self) -> float:
         ...
 
+    @property
     def ask(self) -> float:
         ...
 
-    def long(self) -> float:
-        ...
-
-    def short(self) -> float:
-        ...
-
-    def position(self) -> Position:
-        ...
-
+    @property
     def orders(self) -> Orders:
         ...
 
+    @property
+    def position(self) -> Position:
+        ...
+
+    def long(self, price: float, quantity: int) -> None:
+        ...
+
+    def short(self, price: float, quantity: int) -> None:
+        ...
+
     def cancel_all(self) -> None:
+        ...
+
+    def cancel(self, order_id: str) -> None:
         ...
 
 
@@ -85,7 +91,7 @@ def convert_epoch(epoch_ms: int) -> str:
     return datetime.fromtimestamp(epoch_ms / 1000.0).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def round_point(entry: str) -> float:
+def round_point(entry: float) -> float:
     """ Round the float number to 0 or 5 """
     left, right = str(round(float(entry), 1)).split(".")
     floor = "5" if int(right) // 5 == 1 else "0"
@@ -98,7 +104,7 @@ def bankruptcy_price(
     account_balance: float,
     order_margin: float,
     fee_to_open: float,
-):
+) -> float:
     """Compute the Bankruptcy price for long position in cross margin
 
     https://help.bybit.com/hc/en-us/articles/360039261334-How-to-calculate-Liquidation-Price-Inverse-Contract-
@@ -115,7 +121,7 @@ def liquidation_price(
     order_margin: float,
     fee_to_open: float,
     maintenance_margin: float,
-):
+) -> float:
     """Compute the liquidaction price for long position in cross margin
 
     https://help.bybit.com/hc/en-us/articles/360039261334-How-to-calculate-Liquidation-Price-Inverse-Contract
@@ -140,7 +146,7 @@ def allocate_longs(
     multiplicator: int = 10,
     intercept: int = 7,
     growth_factor: float = 1.3,
-):
+) -> Iterator[Tuple[float, int, float]]:
     """ compute the series of long orders """
     if qty > 2048:
         return
@@ -169,20 +175,18 @@ class BybitExchange(Exchange):
 
     def _wait_feedback(self) -> None:
         """ Wait Bybit feedback and update states """
+        LOGGER.info('Wait for feedback')
         for _ in count():
             feedback = self.ws.get_data("order")
             if feedback:
                 LOGGER.debug(f"Feedback Received: {feedback}")
-                self.orders = [
-                    Order(
-                        order["order_id"],
-                        order["side"],
-                        float(order["price"]),
-                        int(order["qty"]),
-                        order["order_status"],
-                    )
-                    for order in feedback
-                ]
+                self.orders = [Order(  # type: ignore
+                    order["order_id"],
+                    order["side"],
+                    float(order["price"]),
+                    int(order["qty"]),
+                    order["order_status"],
+                ) for order in feedback]
                 return
             sleep(SLEEP_WS)
 
@@ -224,26 +228,18 @@ class BybitExchange(Exchange):
     @property
     def orders(self) -> Orders:
         feedback = self.ws.get_data("order")
-        if not feedback:
-            return self._orders
-
-        self.orders = [
-            Order(
+        if feedback:
+            self.orders = [Order(  # type: ignore
                 order["order_id"],
                 order["side"],
                 float(order["price"]),
                 int(order["qty"]),
                 order["order_status"],
-            )
-            for order in feedback
-        ]
+            ) for order in feedback]
         return self._orders
 
     @orders.setter
     def orders(self, new_orders: List[Order]) -> None:
-        LOGGER.info(self._orders)
-        LOGGER.info(new_orders)
-
         # 1. Update all the orders
         for new_order in new_orders:
             if new_order.side == "Buy":
@@ -256,12 +252,16 @@ class BybitExchange(Exchange):
         self._orders = Orders(
             {
                 order.order_id: order
-                for order in sorted(self._orders.longs.values(), key=lambda o: o.quantity)
+                for order in sorted(
+                    self._orders.longs.values(), key=lambda o: o.quantity
+                )
                 if order.order_status == "New"
             },
             {
                 order.order_id: order
-                for order in sorted(self._orders.shorts.values(), key=lambda o: o.quantity)
+                for order in sorted(
+                    self._orders.shorts.values(), key=lambda o: o.quantity
+                )
                 if order.order_status == "New"
             },
         )
@@ -280,7 +280,7 @@ class BybitExchange(Exchange):
             raise NotInCycle
 
         return Position(
-            round_point(my_position["result"]["entry_price"]),
+            round_point(float(my_position["result"]["entry_price"])),
             float(my_position["result"]["entry_price"]),
             my_position["result"]["size"],
             my_position["rate_limit_status"],
@@ -288,20 +288,26 @@ class BybitExchange(Exchange):
             my_position["rate_limit"],
         )
 
-    def cancel_all(self):
-        return self.rest.Order.Order_cancelAll(symbol=self.symbol).result()
+    def cancel_all(self) -> None:
+        output = self.rest.Order.Order_cancelAll(symbol=self.symbol).result()
 
-    def cancel(self, order_id: str):
-        return_value = self.rest.Order.Order_cancel(
+        LOGGER.debug(output)
+        self._wait_feedback()
+        return
+
+    def cancel(self, order_id: str) -> None:
+        output = self.rest.Order.Order_cancel(
             symbol=self.symbol, order_id=order_id
         ).result()
 
+        LOGGER.debug(output)
         self._wait_feedback()
-        return return_value
+        return
 
     def long(self, price: float, quantity: int) -> None:
         """ Put a buy order to on the exchange """
-        return_value = self.rest.Order.Order_new(
+        LOGGER.info(f'Long({price}, {quantity}')
+        output = self.rest.Order.Order_new(
             side="Buy",
             symbol=self.symbol,
             order_type="Limit",
@@ -310,12 +316,14 @@ class BybitExchange(Exchange):
             time_in_force="PostOnly",
         ).result()
 
+        LOGGER.debug(output)
         self._wait_feedback()
-        return return_value
+        return
 
     def short(self, price: float, quantity: int) -> None:
         """ Put a buy order to on the exchange """
-        return_value = self.rest.Order.Order_new(
+        LOGGER.info(f'Long({price}, {quantity}')
+        output = self.rest.Order.Order_new(
             side="Sell",
             symbol=self.symbol,
             order_type="Limit",
@@ -324,8 +332,9 @@ class BybitExchange(Exchange):
             time_in_force="PostOnly",
         ).result()
 
+        LOGGER.debug(output)
         self._wait_feedback()
-        return return_value
+        return
 
 
 def exchange_factory(exchange_name: str) -> Exchange:
@@ -353,7 +362,7 @@ class CharlieBot:
         self.exchange_name = exchange_name
         self.exchange = exchange_factory(exchange_name)
 
-    def trigger_long(self) -> Position:
+    def trigger_long(self) -> None:
         """ trigger the start of a trading with the best long """
 
         current_bid = self.exchange.bid
@@ -374,8 +383,9 @@ class CharlieBot:
                 info_msg += f" Spread current_bid/new_bid: ({new_bid - current_bid})"
                 LOGGER.info(info_msg)
                 if current_bid + TRESHOLD_REST < new_bid:
-                    LOGGER.info("Cancel previous orders")
-                    self.exchange.cancel_all()
+                    for order_id in self.exchange.orders.longs:
+                        LOGGER.info(f"Cancel orders: {order_id}")
+                        self.exchange.cancel(order_id)
                     current_bid = new_bid
                     info_msg = (
                         f"Trying to take position: {self.init_quantity}, {current_bid}"
@@ -386,16 +396,15 @@ class CharlieBot:
 
             else:
                 position_spread = float(position.real_entry_price) - current_bid
-                info_msg = f"Position found: {position}. Spread: {current_bid}/{position.real_entry_price}: "
-                info_msg += (
-                    f"{position_spread} ({position_spread / current_bid * 100} %)"
-                )
+                info_msg = f"Position found: {position}."
+                info_msg += f"Spread (V): {current_bid} - {position.real_entry_price} = {position_spread}"
+                info_msg += f"Spread (%): ({position_spread / current_bid * 100} %)"
                 LOGGER.info(info_msg)
-                return position
+                return
 
-    def trigger_complete(self, position: Position = None) -> Position:
+    def trigger_complete(self) -> None:
         """ Complete the trigger with a short and a long """
-        position = position if position else self.exchange.position
+        position = self.exchange.position
         short_price = position.entry_price + self.short_big_spread
         LOGGER.info(f"Take a short order: {short_price}, {self.init_quantity}")
         self.exchange.short(short_price, self.init_quantity)
@@ -405,7 +414,7 @@ class CharlieBot:
         ):
             LOGGER.info(f"Take a long order: {long_price}, {quantity}, {spread}")
             self.exchange.long(long_price, quantity)
-        return position
+        return
 
     def start_cycle(self) -> None:
         """ """
@@ -420,12 +429,13 @@ class CharlieBot:
             except NotInCycle:
                 LOGGER.info("Cancel all orders: trade successful!")
                 self.exchange.cancel_all()
-                break
+                return
 
             orders = self.exchange.orders
             # 1. A long order has been filled.  This increased the quantity position.
             # we need to equalize the shorts orders with two short orders.
-            if orders.shorts_qty < position.quantity:
+            if orders.shorts_qty() < position.quantity:
+                LOGGER.info('Shorts Quanty < Position Quantity: {orders.shorts_qty} < {position.quantity}')
                 for short in orders.shorts.values():
                     self.exchange.cancel(short.order_id)
                 # We want to reduce the exposure by putting an order close to our entry price
@@ -440,16 +450,14 @@ class CharlieBot:
                 )
 
             if orders.head_longs().quantity != position.quantity * 2:
+                LOGGER.info('Head long quantity != Position Quantity: {orders.head_longs()} < {position.quantity}')
                 for _long, long_settings in zip_longest(
-                    orders.longs,
+                    orders.longs.values(),
                     allocate_longs(position.entry_price, position.quantity),
                 ):
-                    LOGGER.info(f"Cancel : {_long.order_id}, {_long.quantity}")
-                    self.exchange.cancel(_long.order_id)
+                    if _long:
+                        self.exchange.cancel(_long.order_id)
                     long_price, quantity, spread = long_settings
-                    LOGGER.info(
-                        f"Take a long order: {long_price}, {quantity}, {spread}"
-                    )
                     self.exchange.long(long_price, quantity)
 
     def __repr__(self):

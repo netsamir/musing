@@ -129,6 +129,7 @@ class TestCommon(unittest.TestCase):
         )
 
         self.assertEqual(orders.shorts_qty(), 3)
+        self.assertEqual(orders.head_longs().quantity, 1)
 
     def test_bankruptcy_price(self):
         self.assertEqual(
@@ -361,6 +362,27 @@ class TestBybitExchange(unittest.TestCase):
                 "position_idx": 0,
                 "order_status": "New",
                 "symbol": "BTCUSD",
+                "side": "Buy",
+                "order_type": "Limit",
+                "price": "55600",
+                "qty": "1",
+                "time_in_force": "PostOnly",
+                "order_link_id": "",
+                "order_id": "d3aa620e-bcbd-41c6-9315-f1be7570bfe3",
+                "created_at": "2021-04-20T12:35:28.941Z",
+                "updated_at": "2021-04-20T12:35:28.941Z",
+                "leaves_qty": "1",
+                "leaves_value": "0.00003597",
+                "cum_exec_qty": "0",
+                "cum_exec_value": "0",
+                "cum_exec_fee": "0",
+                "reject_reason": "EC_NoError",
+            },
+            {
+                "user_id": 2681267,
+                "position_idx": 0,
+                "order_status": "New",
+                "symbol": "BTCUSD",
                 "side": "Sell",
                 "order_type": "Limit",
                 "price": "56300",
@@ -400,75 +422,86 @@ class TestBybitExchange(unittest.TestCase):
             },
         ]
 
-        self.assertEqual(ex.orders, bot.Orders(
-            longs={
-                "d0aa620e-bcbd-41c6-9315-f1be7570bfe3": bot.Order(
-                    order_id="d0aa620e-bcbd-41c6-9315-f1be7570bfe3",
-                    side="Buy",
-                    price=55600.0,
-                    quantity=2,
-                    order_status="New",
-                )
-            },
-            shorts={
-                "5b7eebcf-c43c-4396-8aea-07c6d9dad76e": bot.Order(
-                    order_id="5b7eebcf-c43c-4396-8aea-07c6d9dad76e",
-                    side="Sell",
-                    price=56300.0,
-                    quantity=1,
-                    order_status="New",
-                ),
-                "88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4": bot.Order(
-                    order_id="88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4",
-                    side="Sell",
-                    price=56500.0,
-                    quantity=1,
-                    order_status="New",
-                ),
-            },
-        ))
+        self.assertEqual(
+            ex.orders,
+            bot.Orders(
+                longs={
+                    "d3aa620e-bcbd-41c6-9315-f1be7570bfe3": bot.Order(
+                        order_id="d3aa620e-bcbd-41c6-9315-f1be7570bfe3",
+                        side="Buy",
+                        price=55600.0,
+                        quantity=1,
+                        order_status="New",
+                    ),
+                    "d0aa620e-bcbd-41c6-9315-f1be7570bfe3": bot.Order(
+                        order_id="d0aa620e-bcbd-41c6-9315-f1be7570bfe3",
+                        side="Buy",
+                        price=55600.0,
+                        quantity=2,
+                        order_status="New",
+                    ),
+                },
+                shorts={
+                    "5b7eebcf-c43c-4396-8aea-07c6d9dad76e": bot.Order(
+                        order_id="5b7eebcf-c43c-4396-8aea-07c6d9dad76e",
+                        side="Sell",
+                        price=56300.0,
+                        quantity=1,
+                        order_status="New",
+                    ),
+                    "88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4": bot.Order(
+                        order_id="88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4",
+                        side="Sell",
+                        price=56500.0,
+                        quantity=1,
+                        order_status="New",
+                    ),
+                },
+            ),
+        )
 
+    def test_bid(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.bid
+        bybit_mock.bybit().Market.Market_symbolInfo.assert_called_once()
 
-#     @patch("crypto_bot.bot.bybit")
-#     def test_bid(self, mock_bybit):
-#         ex = bot.BybitExchange()
-#         ex.bid
-#         mock_bybit.bybit().Market.Market_symbolInfo.assert_called_once()
+    def test_ask(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.ask
+        bybit_mock.bybit().Market.Market_symbolInfo.assert_called_once()
 
-#     @patch("crypto_bot.bot.bybit")
-#     def test_ask(self, mock_bybit):
-#         ex = bot.BybitExchange()
-#         ex.ask
-#         mock_bybit.bybit().Market.Market_symbolInfo.assert_called_once()
+    def test_cancel_all(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.cancel_all()
+        bybit_mock.bybit().Order.Order_cancelAll.assert_called_with(symbol="BTCUSD")
 
-#     @patch("crypto_bot.bot.bybit")
-#     def test_cancel_all(self, mock_bybit):
-#         ex = bot.BybitExchange()
-#         ex.cancel_all()
-#         mock_bybit.bybit().Order.Order_cancelAll.assert_called_with(symbol="BTCUSD")
+    def test_cancel(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.cancel("88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4")
+        bybit_mock.bybit().Order.Order_cancel.assert_called_with(
+            symbol="BTCUSD", order_id="88d6be9c-c6f4-4c2b-87c4-05cb67d2bfc4"
+        )
 
-#     @patch("crypto_bot.bot.bybit")
-#     def test_long(self, mock_bybit):
-#         ex = bot.BybitExchange()
-#         ex.long(0, 0)
-#         mock_bybit.bybit().Order.Order_new.assert_called_with(
-#             side="Buy",
-#             symbol="BTCUSD",
-#             order_type="Limit",
-#             qty=0,
-#             price=0,
-#             time_in_force="PostOnly",
-#         )
+    def test_long(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.long(0, 0)
+        bybit_mock.bybit().Order.Order_new.assert_called_with(
+            side="Buy",
+            symbol="BTCUSD",
+            order_type="Limit",
+            qty=0,
+            price=0,
+            time_in_force="PostOnly",
+        )
 
-#     @patch("crypto_bot.bot.bybit")
-#     def test_short(self, mock_bybit):
-#         ex = bot.BybitExchange()
-#         ex.short(0, 0)
-#         mock_bybit.bybit().Order.Order_new.assert_called_with(
-#             side="Sell",
-#             symbol="BTCUSD",
-#             order_type="Limit",
-#             qty=0,
-#             price=0,
-#             time_in_force="PostOnly",
-#         )
+    def test_short(self, bybit_mock, ws_mock):
+        ex = bot.BybitExchange()
+        ex.short(0, 0)
+        bybit_mock.bybit().Order.Order_new.assert_called_with(
+            side="Sell",
+            symbol="BTCUSD",
+            order_type="Limit",
+            qty=0,
+            price=0,
+            time_in_force="PostOnly",
+        )

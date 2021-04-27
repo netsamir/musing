@@ -21,3 +21,8 @@ def code(c):
     run('flake8 --max-complexity 8 src/*/*.py')
     run('pycodestyle src/*/*py')
     run('mypy src/*/*.py')
+
+
+@task
+def mypy(c):
+    run('mypy src/*/*.py')
