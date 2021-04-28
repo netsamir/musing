@@ -260,6 +260,8 @@ class TestBybitExchange(unittest.TestCase):
                 rate_limit_status=119,
                 rate_limit_reset="2021-04-21 18:53:29.784000",
                 rate_limit=120,
+                unrealised_pnl=-1e-08,
+                liq_price=2.5,
             ),
         )
 
@@ -505,3 +507,8 @@ class TestBybitExchange(unittest.TestCase):
             price=0,
             time_in_force="PostOnly",
         )
+
+    # def test_trigger_long(self):
+    #     pass
+
+    # # trigger_long(self) -> None:

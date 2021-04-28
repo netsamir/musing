@@ -311,7 +311,7 @@ class BybitExchange(Exchange):
             convert_epoch(my_position["rate_limit_reset_ms"]),
             my_position["rate_limit"],
             my_position["result"]["unrealised_pnl"],
-            my_position["result"]["liq_price"],
+            float(my_position["result"]["liq_price"]),
         )
         LOGGER.info(position)
         return position
